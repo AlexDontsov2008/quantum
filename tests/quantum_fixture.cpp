@@ -22,8 +22,17 @@ using namespace Bloomberg;
 class TestTaskStateHandler::TestTaskStateHandlerImpl
 {
 public:
+    ~TestTaskStateHandlerImpl()
+    {
+        EXPECT_EQ(_counters._initialized, 0);
+        EXPECT_EQ(_counters._started, _counters._stopped);
+        EXPECT_EQ(_counters._resumed, _counters._suspended);
+    }
+
     void operator()(size_t taskId, int queueId, Bloomberg::quantum::TaskType type, Bloomberg::quantum::TaskState state)
     {
+        _counters(state);
+
         switch (state)
         {
             case Bloomberg::quantum::TaskState::Started:
@@ -89,7 +98,60 @@ public:
                 break;
         }
     }
+private:
+    TaskStatesCounter _counters;
 };
+
+
+TaskStatesCounter::TaskStatesCounter(int initialized,
+                                     int started,
+                                     int resumed,
+                                     int suspended,
+                                     int stopped)
+    : _initialized(initialized)
+    , _started(started)
+    , _resumed(resumed)
+    , _suspended(suspended)
+    , _stopped(stopped)
+{}
+
+void TaskStatesCounter::operator()(Bloomberg::quantum::TaskState state)
+{
+    switch (state)
+    {
+        case Bloomberg::quantum::TaskState::Initialized:
+            ++_initialized;
+            break;
+        case Bloomberg::quantum::TaskState::Started:
+            ++_started;
+            break;
+        case Bloomberg::quantum::TaskState::Resumed:
+            ++_resumed;
+            break;
+        case Bloomberg::quantum::TaskState::Suspended:
+            ++_suspended;
+            break;
+        case Bloomberg::quantum::TaskState::Stopped:
+            ++_stopped;
+            break;
+        default:
+            break;
+    }
+}
+
+void TaskStatesCounter::clear() {
+    _initialized = _started = _resumed = _suspended = _stopped = 0;
+}
+
+std::ostream& operator<<(std::ostream& out, const TaskStatesCounter& taskStatesCounter)
+{
+    out << "initialized: " << taskStatesCounter._initialized << '\n'
+        << "started: " << taskStatesCounter._started << '\n'
+        << "resumed: " << taskStatesCounter._resumed << '\n'
+        << "suspended: " << taskStatesCounter._suspended << '\n'
+        << "stopped: " << taskStatesCounter._stopped;
+    return out;
+}
 
 TestTaskStateHandler::TestTaskStateHandler():
     _impl(std::make_shared<TestTaskStateHandlerImpl>())

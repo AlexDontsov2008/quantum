@@ -17,14 +17,38 @@
 #define BLOOMBERG_QUANTUM_FIXTURE_H
 
 #include <gtest/gtest.h>
+
 #include <quantum/quantum.h>
-#include <unordered_map>
+
+#include <atomic>
 #include <memory>
 #include <functional>
+#include <unordered_map>
 
 namespace quantum = Bloomberg::quantum;
 
 using ms = std::chrono::milliseconds;
+
+/// @brief TaskStatesCounter structure
+struct TaskStatesCounter {
+    explicit TaskStatesCounter(int initialized = 0,
+                               int started = 0,
+                               int resumed = 0,
+                               int suspended = 0,
+                               int stopped = 0);
+
+    void operator()(Bloomberg::quantum::TaskState state);
+
+    void clear();
+
+    friend std::ostream& operator<<(std::ostream& out, const TaskStatesCounter& taskStatesCounter);
+
+    std::atomic_int _initialized;
+    std::atomic_int _started;
+    std::atomic_int _resumed;
+    std::atomic_int _suspended;
+    std::atomic_int _stopped;
+};
 
 /// @brief TestTaskStateHandler class
 class TestTaskStateHandler

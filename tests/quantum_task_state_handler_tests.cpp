@@ -15,44 +15,50 @@
 */
 
 #include <cstdlib>
-#include <atomic>
+#include <stdexcept>
+#include <functional>
 
 #include <gtest/gtest.h>
+
 #include <quantum/quantum.h>
 #include <quantum_fixture.h>
 
 
 namespace {
+template <typename RET>
+using CoroutineFunction = std::function<int(Bloomberg::quantum::CoroContextPtr<RET>)>;
 
 struct TaskParams
 {
-    size_t yieldIterations{0}; // A number of times the task is supposed to yield. Coroutines only support.
-    bool randomYieldIterations{false}; // If true the task will yield a random number of times in range [0, yieldIterations]. Coroutines only support.
-    ms sleepTime{30}; // Sleep time between yield calls. If yieldIterations is 0, a task will sleep sleepTime ms. For coroutine real work will take sleepTime / 2
+    size_t contextSwitchCount{0}; // A number of times the task is supposed to switch the context. Coroutines only support.
+    bool randomContextSwitchCount{false}; // If true the task will switch the context a random number of times in range [0, contextSwitchCount]. Coroutines only support.
+    ms sleepTime{30}; // Sleep time between context switch. If contextSwitchCount is 0, the task doesn't sleep. For coroutine real work will take sleepTime / 2
     bool randomSleepTime{false}; // If true the task will sleep random time in range [0, sleepTime]
     bool throwException{false}; // Indicates if a task should throw exception
     size_t exceptionIteration{0}; // Iteration on which exception is thrown. Coroutines only support.
     Bloomberg::quantum::ITask::RetCode returnCode{Bloomberg::quantum::ITask::RetCode::Success}; // Return code of the task
 };
 
-std::function<int(Bloomberg::quantum::CoroContext<int>::Ptr)> makeCoroutineTask(const TaskParams& taskParams)
+template <typename RET = int>
+CoroutineFunction<RET> makeCoroutineTask(const TaskParams& taskParams)
 {
-    return [taskParams](Bloomberg::quantum::CoroContext<int>::Ptr ctx)-> int {
-        size_t yieldIterations = taskParams.yieldIterations;
-        if (taskParams.randomYieldIterations)
+    return [taskParams](Bloomberg::quantum::CoroContextPtr<RET> ctx)-> int {
+        size_t contextSwitchCount = taskParams.contextSwitchCount;
+        if (taskParams.randomContextSwitchCount)
         {
-            yieldIterations = rand() % (taskParams.yieldIterations + 1);
+            contextSwitchCount = rand() % (taskParams.contextSwitchCount + 1);
         }
 
-        size_t iteration = 0;
-        while (iteration++ < yieldIterations)
+        for (size_t iteration = 0; iteration < contextSwitchCount; ++iteration)
         {
             ms sleepTime = taskParams.sleepTime;
             if (taskParams.randomSleepTime && (sleepTime.count() > 0))
             {
                 sleepTime = static_cast<ms>(rand() % sleepTime.count() + 1);
             }
+            // IO operation time
             ctx->sleep(sleepTime);
+            // CPU operation time
             std::this_thread::sleep_for(static_cast<ms>(sleepTime.count() / 2));
             if (taskParams.throwException && (taskParams.exceptionIteration == iteration))
             {
@@ -64,9 +70,11 @@ std::function<int(Bloomberg::quantum::CoroContext<int>::Ptr)> makeCoroutineTask(
     };
 }
 
-std::function<int(Bloomberg::quantum::ThreadPromise<int>::Ptr)> makeIoTask(const TaskParams& taskParams)
+template <typename RET = int>
+std::function<int(Bloomberg::quantum::ThreadPromisePtr<RET>)>
+makeIoTask(const TaskParams& taskParams)
 {
-    return [taskParams](Bloomberg::quantum::ThreadPromise<int>::Ptr)-> int {
+    return [taskParams](Bloomberg::quantum::ThreadPromisePtr<RET>)-> int {
         ms sleepTime = taskParams.sleepTime;
         if (taskParams.randomSleepTime)
         {
@@ -87,70 +95,69 @@ BitField unify(BitField lhs, BitField rhs)
     return static_cast<BitField>(static_cast<int>(lhs) | static_cast<int>(rhs));
 }
 
-struct TaskStatesCounter {
-    explicit TaskStatesCounter(int initialized = 0,
-                               int started = 0,
-                               int resumed = 0,
-                               int suspended = 0,
-                               int stopped = 0)
-        : _initialized(initialized)
-        , _started(started)
-        , _resumed(resumed)
-        , _suspended(suspended)
-        , _stopped(stopped)
-    {}
-    void operator()(Bloomberg::quantum::TaskState state)
-    {
-        switch (state)
-        {
-            case Bloomberg::quantum::TaskState::Initialized:
-                ++_initialized;
-                break;
-            case Bloomberg::quantum::TaskState::Started:
-                ++_started;
-                break;
-            case Bloomberg::quantum::TaskState::Resumed:
-                ++_resumed;
-                break;
-            case Bloomberg::quantum::TaskState::Suspended:
-                ++_suspended;
-                break;
-            case Bloomberg::quantum::TaskState::Stopped:
-                ++_stopped;
-                break;
-            default:
-                break;
-        }
-    }
+// struct TaskStatesCounter {
+//     explicit TaskStatesCounter(int initialized = 0,
+//                                int started = 0,
+//                                int resumed = 0,
+//                                int suspended = 0,
+//                                int stopped = 0)
+//         : _initialized(initialized)
+//         , _started(started)
+//         , _resumed(resumed)
+//         , _suspended(suspended)
+//         , _stopped(stopped)
+//     {}
+//     void operator()(Bloomberg::quantum::TaskState state)
+//     {
+//         switch (state)
+//         {
+//             case Bloomberg::quantum::TaskState::Initialized:
+//                 ++_initialized;
+//                 break;
+//             case Bloomberg::quantum::TaskState::Started:
+//                 ++_started;
+//                 break;
+//             case Bloomberg::quantum::TaskState::Resumed:
+//                 ++_resumed;
+//                 break;
+//             case Bloomberg::quantum::TaskState::Suspended:
+//                 ++_suspended;
+//                 break;
+//             case Bloomberg::quantum::TaskState::Stopped:
+//                 ++_stopped;
+//                 break;
+//             default:
+//                 break;
+//         }
+//     }
 
-    void clear() {
-        _initialized = _started = _resumed = _suspended = _stopped = 0;
-    }
+//     void clear() {
+//         _initialized = _started = _resumed = _suspended = _stopped = 0;
+//     }
 
-    friend std::ostream& operator<<(std::ostream& out, const TaskStatesCounter& taskStatesCounter)
-    {
-        out << "initialized: " << taskStatesCounter._initialized << '\n'
-            << "started: " << taskStatesCounter._started << '\n'
-            << "resumed: " << taskStatesCounter._resumed << '\n'
-            << "suspended: " << taskStatesCounter._suspended << '\n'
-            << "stopped: " << taskStatesCounter._stopped;
-        return out;
-    }
+//     friend std::ostream& operator<<(std::ostream& out, const TaskStatesCounter& taskStatesCounter)
+//     {
+//         out << "initialized: " << taskStatesCounter._initialized << '\n'
+//             << "started: " << taskStatesCounter._started << '\n'
+//             << "resumed: " << taskStatesCounter._resumed << '\n'
+//             << "suspended: " << taskStatesCounter._suspended << '\n'
+//             << "stopped: " << taskStatesCounter._stopped;
+//         return out;
+//     }
 
-    std::atomic_int _initialized;
-    std::atomic_int _started;
-    std::atomic_int _resumed;
-    std::atomic_int _suspended;
-    std::atomic_int _stopped;
-};
+//     std::atomic_int _initialized;
+//     std::atomic_int _started;
+//     std::atomic_int _resumed;
+//     std::atomic_int _suspended;
+//     std::atomic_int _stopped;
+// };
 
-
-class TaskStateHandlerTest :
+class DispatcherTaskStateHandlerTest :
     public ::testing::TestWithParam<std::tuple<Bloomberg::quantum::TaskType,
                                                Bloomberg::quantum::TaskStateHandler>>
 {
 protected:
-    TaskStateHandlerTest()
+    DispatcherTaskStateHandlerTest()
     {
         srand((unsigned) time(NULL));
     }
@@ -166,7 +173,8 @@ protected:
         bool coroutineSharingForAny = false,
         bool loadBalanceSharedIoQueues = false,
         Bloomberg::quantum::TaskState handledTaskStates = Bloomberg::quantum::TaskState::All,
-        Bloomberg::quantum::TaskStateHandler taskStateHandler = {})
+        Bloomberg::quantum::TaskStateHandler taskStateHandler = {},
+        CoroutineFunction<int> userCoroutineTask = {})
     {
         TaskStatesCounter taskStatesCounter;
         if (taskStateHandler)
@@ -192,6 +200,12 @@ protected:
                                        coroutineSharingForAny,
                                        taskStateConfiguration);
         auto dispatcher = DispatcherSingleton::createInstance(config);
+
+        CoroutineFunction<int> coroutineTask = makeCoroutineTask(taskParams);
+        if (userCoroutineTask)
+        {
+            coroutineTask = userCoroutineTask;
+        }
         for(size_t taskId = 0; taskId < tasksCount; ++taskId)
         {
             switch (_handledTaskType)
@@ -199,7 +213,7 @@ protected:
                 case Bloomberg::quantum::TaskType::None:
                     break;
                 case Bloomberg::quantum::TaskType::Coroutine: {
-                    dispatcher->post(makeCoroutineTask(taskParams));
+                    dispatcher->post(coroutineTask);
                     break;
                 }
                 case Bloomberg::quantum::TaskType::IoTask: {
@@ -207,7 +221,7 @@ protected:
                     break;
                 }
                 case Bloomberg::quantum::TaskType::All: {
-                    dispatcher->post(makeCoroutineTask(taskParams));
+                    dispatcher->post(coroutineTask);
                     dispatcher->postAsyncIo(makeIoTask(taskParams));
                     break;
                 }
@@ -219,6 +233,34 @@ protected:
 
         std::cout << taskStatesCounter << std::endl;
         EXPECT_EQ(taskStatesCounter._initialized, 0);
+        const bool isStartedStateHandled =
+            Bloomberg::quantum::isIntersection(handledTaskStates, Bloomberg::quantum::TaskState::Started);
+        if (isStartedStateHandled and not userCoroutineTask)
+        {
+            size_t expectedStartedCount = 0;
+            switch (_handledTaskType)
+            {
+                case Bloomberg::quantum::TaskType::None: {
+                    expectedStartedCount = 0;
+                    break;
+                }
+                case Bloomberg::quantum::TaskType::Coroutine: {
+                    expectedStartedCount = tasksCount;
+                    break;
+                }
+                case Bloomberg::quantum::TaskType::IoTask: {
+                    expectedStartedCount = tasksCount;
+                    break;
+                }
+                case Bloomberg::quantum::TaskType::All: {
+                    expectedStartedCount = 2 * tasksCount;
+                    break;
+                }
+                default:
+                    break;
+            }
+            EXPECT_EQ(taskStatesCounter._started, expectedStartedCount);
+        }
         EXPECT_EQ(taskStatesCounter._started, taskStatesCounter._stopped);
         EXPECT_EQ(taskStatesCounter._resumed, taskStatesCounter._suspended);
         if (Bloomberg::quantum::TaskType::IoTask == _handledTaskType)
@@ -229,6 +271,133 @@ protected:
 
     Bloomberg::quantum::TaskType _handledTaskType;
     Bloomberg::quantum::TaskStateHandler _taskStateHandler;
+};
+
+enum class SequencerType {
+    None,
+    Normal,
+    Experimental
+};
+
+class SequencerTaskStateHandlerTest :
+    public ::testing::TestWithParam<std::tuple<Bloomberg::quantum::TaskType, SequencerType>>
+{
+protected:
+    SequencerTaskStateHandlerTest()
+    : _sequencerType(SequencerType::None)
+    {
+        srand((unsigned) time(NULL));
+    }
+
+    void SetUp() override {
+        _handledTaskType = std::get<0>(GetParam());
+        _sequencerType = std::get<1>(GetParam());
+    }
+
+    void testTaskStateHandler(
+        size_t tasksCount,
+        const TaskParams& taskParams,
+        bool coroutineSharingForAny = false,
+        bool loadBalanceSharedIoQueues = false,
+        CoroutineFunction<Bloomberg::quantum::Void> userCoroutineTask = {})
+    {
+        TaskStatesCounter taskStatesCounter;
+        auto taskStateHandler = [&taskStatesCounter]
+        (size_t, int, Bloomberg::quantum::TaskType taskType, Bloomberg::quantum::TaskState state)
+        {
+            EXPECT_EQ(taskType, Bloomberg::quantum::TaskType::Coroutine);
+            taskStatesCounter(state);
+        };
+
+        Bloomberg::quantum::TaskStateConfiguration taskStateConfiguration;
+        taskStateConfiguration.setTaskStateHandler(taskStateHandler);
+        taskStateConfiguration.setHandledTaskStates(Bloomberg::quantum::TaskState::All);
+        taskStateConfiguration.setHandledTaskTypes(_handledTaskType);
+        const TestConfiguration config(loadBalanceSharedIoQueues,
+                                       coroutineSharingForAny,
+                                       taskStateConfiguration);
+        auto dispatcher = DispatcherSingleton::createInstance(config);
+
+
+        // Initialize sequencer
+        std::function<bool(std::chrono::milliseconds, bool)> drain;
+        switch (_sequencerType)
+        {
+            case SequencerType::Normal:
+            {
+                _normalSequencer =
+                    std::make_unique<Bloomberg::quantum::Sequencer<SequencerKey>>(*dispatcher);
+                _experimentalSequencer.reset();
+                drain = [this](std::chrono::milliseconds timeout, bool isFinal) {
+                    return _normalSequencer->drain(timeout, isFinal);
+                };
+                break;
+            }
+            case SequencerType::Experimental:
+            {
+                _experimentalSequencer =
+                    std::make_unique<Bloomberg::quantum::experimental::Sequencer<SequencerKey>>(*dispatcher);
+                _normalSequencer.reset();
+                drain = [this](std::chrono::milliseconds timeout, bool isFinal) {
+                    return _experimentalSequencer->drain(timeout, isFinal);
+                };
+                break;
+            }
+            default:
+            {
+                throw std::runtime_error("Undefined type of sequencer");
+            }
+        }
+
+        auto task = makeCoroutineTask<Bloomberg::quantum::Void>(taskParams);
+        if (userCoroutineTask)
+        {
+            task = userCoroutineTask;
+        }
+        const SequencerKey key(0);
+        for (size_t taskId = 0; taskId < tasksCount; ++taskId)
+        {
+            switch (_sequencerType)
+            {
+                case SequencerType::Normal:
+                {
+                    _normalSequencer->enqueue(key, task);
+                    break;
+                }
+                case SequencerType::Experimental:
+                {
+                    _experimentalSequencer->enqueue(key, task);
+                    break;
+                }
+                default:
+                {
+                    throw std::runtime_error("Undefined type of sequencer");
+                }
+            }
+        }
+        drain(std::chrono::milliseconds(-1), false);
+
+        std::cout << taskStatesCounter << std::endl;
+        EXPECT_EQ(taskStatesCounter._initialized, 0);
+        if (not userCoroutineTask)
+        {
+            EXPECT_EQ(taskStatesCounter._started, tasksCount);
+        }
+        EXPECT_EQ(taskStatesCounter._started, taskStatesCounter._stopped);
+        if (not taskParams.randomContextSwitchCount)
+        {
+            EXPECT_EQ(taskParams.contextSwitchCount, taskStatesCounter._resumed);
+        }
+        EXPECT_EQ(taskStatesCounter._resumed, taskStatesCounter._suspended);
+
+    }
+
+    using SequencerKey = int;
+    std::unique_ptr<Bloomberg::quantum::Sequencer<SequencerKey>> _normalSequencer;
+    std::unique_ptr<Bloomberg::quantum::experimental::Sequencer<SequencerKey>> _experimentalSequencer;
+
+    Bloomberg::quantum::TaskType _handledTaskType;
+    SequencerType _sequencerType;
 };
 
 // Handlers
@@ -256,8 +425,7 @@ void testHandleTaskType(Bloomberg::quantum::TaskType taskType,
                         const TaskStatesCounter& expectedTaskStatesCounter,
                         bool loadBalance = false,
                         bool coroutineSharingForAny = false,
-                        bool isHandlerAvailable = true
-                        )
+                        bool isHandlerAvailable = true)
 {
     TaskStatesCounter actualTaskStatesCounter;
     Bloomberg::quantum::TaskStateConfiguration taskStateConfiguration;
@@ -322,8 +490,8 @@ void testHandleTaskState(const std::vector<Bloomberg::quantum::TaskState>& state
 
 } // namespace
 
-INSTANTIATE_TEST_CASE_P(TaskStateHandlerTest_Default,
-                         TaskStateHandlerTest,
+INSTANTIATE_TEST_CASE_P(DispatcherTaskStateHandlerTest_Default,
+                         DispatcherTaskStateHandlerTest,
                          ::testing::Combine(
                             ::testing::Values(
                                 Bloomberg::quantum::TaskType::Coroutine,
@@ -333,11 +501,20 @@ INSTANTIATE_TEST_CASE_P(TaskStateHandlerTest_Default,
                             ::testing::Values(
                                 TestTaskStateHandler())));
 
+INSTANTIATE_TEST_CASE_P(SequencerTaskStateHandlerTest_Default,
+                         SequencerTaskStateHandlerTest,
+                         ::testing::Combine(
+                            ::testing::Values(
+                                Bloomberg::quantum::TaskType::All),
+                            ::testing::Values(
+                                SequencerType::Normal,
+                                SequencerType::Experimental)));
+
 //==============================================================================
-//                             TEST CASES
+//                             HANDLE TASK STATE TEST CASES
 //==============================================================================
 
-TEST(TestTaskStateHandler, UnableToHandleTaskState)
+TEST(TaskStateHandlerTest, UnableToHandleTaskState)
 {
     TaskStatesCounter taskStatesCounter;
     bool isHandlerCalled = false;
@@ -385,7 +562,7 @@ TEST(TestTaskStateHandler, UnableToHandleTaskState)
     EXPECT_EQ(state, Bloomberg::quantum::TaskState::Suspended);
 }
 
-TEST(TestTaskStateHandler, HandleTaskState)
+TEST(TaskStateHandlerTest, HandleTaskState)
 {
     // [Initialized -> Started -> [Suspended -> Resumed] x 2 -> Stopped]
     const std::vector<Bloomberg::quantum::TaskState> fullStatesSequence = {
@@ -428,7 +605,7 @@ TEST(TestTaskStateHandler, HandleTaskState)
 
 }
 
-TEST(TestTaskStateHandler, HandleDifferentTaskTypes)
+TEST(TaskStateHandlerTest, HandleDifferentTaskTypes)
 {
     const TaskParams taskParams{1, false, ms(100), true};
     const size_t tasksCount = 100;
@@ -530,93 +707,173 @@ TEST(TestTaskStateHandler, HandleDifferentTaskTypes)
                        false);
 }
 
-TEST_P(TaskStateHandlerTest, HandleNoneTaskStates)
+//==============================================================================
+//                            DISPATCHER TEST CASES
+//==============================================================================
+
+TEST_P(DispatcherTaskStateHandlerTest, NoContextSwitch)
+{
+    testTaskStateHandler(100, {0, false, ms(100), true});
+}
+
+TEST_P(DispatcherTaskStateHandlerTest, WithContextSwitch)
+{
+    testTaskStateHandler(100, {3, true, ms(100), true});
+}
+
+TEST_P(DispatcherTaskStateHandlerTest, NoContextSwitchOnSharedQueue)
+{
+    testTaskStateHandler(100, {0, false, ms(100), true}, true);
+}
+
+TEST_P(DispatcherTaskStateHandlerTest, WithContextSwitchOnSharedQueue)
+{
+    testTaskStateHandler(100, {3, true, ms(100), true}, true);
+}
+
+TEST_P(DispatcherTaskStateHandlerTest, NoContextSwitchWithLoadBalanceOnSharedIoQueues)
+{
+    testTaskStateHandler(100, {0, false, ms(100), true}, false, true);
+}
+
+TEST_P(DispatcherTaskStateHandlerTest, WithContextSwitchWithLoadBalanceOnSharedIoQueues)
+{
+    testTaskStateHandler(100, {3, true, ms(100), true}, false, true);
+}
+
+TEST_P(DispatcherTaskStateHandlerTest, NoContextSwitchTaskException)
+{
+    testTaskStateHandler(100, {0, false, ms(100), true, true});
+}
+
+TEST_P(DispatcherTaskStateHandlerTest, WithContextSwitchWithException)
+{
+    testTaskStateHandler(100, {2, false, ms(100), true, true, 1});
+}
+
+TEST_P(DispatcherTaskStateHandlerTest, NoContextSwitchWithTaskExceptionOnSharedQueue)
+{
+    testTaskStateHandler(100, {0, false, ms(100), true, true}, true);
+}
+
+TEST_P(DispatcherTaskStateHandlerTest, WithContextSwitchWithTaskExceptionOnSharedQueue)
+{
+    testTaskStateHandler(100, {2, false, ms(100), true, true, 1}, true);
+}
+
+TEST_P(DispatcherTaskStateHandlerTest, NoContextSwitchWithTaskCodeException)
+{
+    testTaskStateHandler(100, {0, false, ms(100), true, false, 0, Bloomberg::quantum::ITask::RetCode::Exception});
+}
+
+TEST_P(DispatcherTaskStateHandlerTest, WithContextSwitchWithTaskCodeException)
+{
+    testTaskStateHandler(100, {2, false, ms(100), true, false, 0, Bloomberg::quantum::ITask::RetCode::Exception});
+}
+
+TEST_P(DispatcherTaskStateHandlerTest, PostTaskFromWithinCoroutine)
+{
+    // Reset handled task type to check only for coroutines
+
+    std::atomic_int outerTaskCallsCounter = 0;
+    std::atomic_int innerTaskCallsCounter = 0;
+
+    TaskParams taskParams;
+    taskParams.contextSwitchCount = 2;
+    taskParams.randomContextSwitchCount = true;
+    auto switchTask = makeCoroutineTask(taskParams);
+    auto innerTask = [&innerTaskCallsCounter, &switchTask] (Bloomberg::quantum::CoroContextPtr<int> ctx) -> int {
+        ++innerTaskCallsCounter;
+        switchTask(ctx);
+        return 0;
+    };
+    auto task = [&outerTaskCallsCounter, &innerTask, &switchTask] (Bloomberg::quantum::CoroContextPtr<int> ctx) -> int {
+        switchTask(ctx);
+        ctx->post(innerTask);
+        ++outerTaskCallsCounter;
+        return 0;
+    };
+    testTaskStateHandler(100, {}, false, false, Bloomberg::quantum::TaskState::All, {}, task);
+    EXPECT_EQ(innerTaskCallsCounter, outerTaskCallsCounter);
+}
+
+TEST_P(DispatcherTaskStateHandlerTest, HandleNoneTaskStates)
 {
     testTaskStateHandler(100, {3, true, ms(100), true}, false, false, Bloomberg::quantum::TaskState::None);
 }
 
-TEST_P(TaskStateHandlerTest, HandleStartedAndStoppedTaskStates)
+TEST_P(DispatcherTaskStateHandlerTest, HandleStartedAndStoppedTaskStates)
 {
     testTaskStateHandler(100, {3, true, ms(100), true}, false, false, StartedAndStoppedHandledStates);
 }
 
-TEST_P(TaskStateHandlerTest, HandleResumedAndSuspendedTaskStates)
+TEST_P(DispatcherTaskStateHandlerTest, HandleResumedAndSuspendedTaskStates)
 {
     // Use empty handler here to avoid issues with checks in the default handler
     testTaskStateHandler(100, {3, true, ms(100), true}, false, false, ResumedAndSuspendedHandledStates, EmptyHandler);
 }
 
-TEST_P(TaskStateHandlerTest, HandleAllTaskStates)
+TEST_P(DispatcherTaskStateHandlerTest, HandleAllTaskStates)
 {
     testTaskStateHandler(100, {3, true, ms(100), true}, false, false, Bloomberg::quantum::TaskState::All);
 }
 
-TEST_P(TaskStateHandlerTest, NoYield)
-{
-    testTaskStateHandler(100, {0, false, ms(100), true});
-}
-
-TEST_P(TaskStateHandlerTest, MultipleYields)
-{
-    testTaskStateHandler(100, {3, true, ms(100), true});
-}
-
-TEST_P(TaskStateHandlerTest, NoYieldSharedQueue)
-{
-    testTaskStateHandler(100, {0, false, ms(100), true}, true);
-}
-
-TEST_P(TaskStateHandlerTest, MultipleYieldsSharedQueue)
-{
-    testTaskStateHandler(100, {3, true, ms(100), true}, true);
-}
-
-TEST_P(TaskStateHandlerTest, NoYieldLoadBalanceSharedIoQueues)
-{
-    testTaskStateHandler(100, {0, false, ms(100), true}, false, true);
-}
-
-TEST_P(TaskStateHandlerTest, MultipleYieldsLoadBalanceSharedIoQueues)
-{
-    testTaskStateHandler(100, {3, true, ms(100), true}, false, true);
-}
-
-TEST_P(TaskStateHandlerTest, NoYieldTaskException)
-{
-    testTaskStateHandler(100, {0, false, ms(100), true, true});
-}
-
-TEST_P(TaskStateHandlerTest, MultipleYieldsException)
-{
-    testTaskStateHandler(100, {2, false, ms(100), true, true, 1});
-}
-
-TEST_P(TaskStateHandlerTest, NoYieldTaskExceptionSharedQueue)
-{
-    testTaskStateHandler(100, {0, false, ms(100), true, true}, true);
-}
-
-TEST_P(TaskStateHandlerTest, MultipleYieldsTaskExceptionSharedQueue)
-{
-    testTaskStateHandler(100, {2, false, ms(100), true, true, 1}, true);
-}
-
-TEST_P(TaskStateHandlerTest, NoYieldTaskCodeException)
-{
-    testTaskStateHandler(100, {0, false, ms(100), true, false, 0, Bloomberg::quantum::ITask::RetCode::Exception});
-}
-
-TEST_P(TaskStateHandlerTest, MultipleYieldsTaskCodeException)
-{
-    testTaskStateHandler(100, {2, false, ms(100), true, false, 0, Bloomberg::quantum::ITask::RetCode::Exception});
-}
-
-TEST_P(TaskStateHandlerTest, LongRunningTask)
+TEST_P(DispatcherTaskStateHandlerTest, LongRunningTask)
 {
     testTaskStateHandler(20, {2, true, ms(1000), false, false, 0, Bloomberg::quantum::ITask::RetCode::Exception});
 }
 
-TEST_P(TaskStateHandlerTest, StressTest)
+TEST_P(DispatcherTaskStateHandlerTest, StressTest)
 {
     testTaskStateHandler(5000, {2, true, ms(50), true});
+}
+
+//==============================================================================
+//                            SEQUENCER TEST CASES
+//==============================================================================
+
+TEST_P(SequencerTaskStateHandlerTest, NoContextSwitch)
+{
+    testTaskStateHandler(100, {0, false, ms(100), false});
+}
+
+TEST_P(SequencerTaskStateHandlerTest, WithContextSwitch)
+{
+    testTaskStateHandler(100, {2, false, ms(100), false});
+}
+
+TEST_P(SequencerTaskStateHandlerTest, NoContextSwitchOnSharedQueue)
+{
+    testTaskStateHandler(100, {0, false, ms(100), true}, true);
+}
+
+TEST_P(SequencerTaskStateHandlerTest, WithContextSwitchOnSharedQueue)
+{
+    testTaskStateHandler(100, {3, true, ms(100), true}, true);
+}
+
+TEST_P(SequencerTaskStateHandlerTest, PostTaskFromWithinCoroutine)
+{
+    // Reset handled task type to check only for coroutines
+
+    std::atomic_int outerTaskCallsCounter = 0;
+    std::atomic_int innerTaskCallsCounter = 0;
+
+    TaskParams taskParams;
+    taskParams.contextSwitchCount = 2;
+    taskParams.randomContextSwitchCount = true;
+    auto switchTask = makeCoroutineTask<Bloomberg::quantum::Void>(taskParams);
+    auto innerTask = [&innerTaskCallsCounter, &switchTask] (Bloomberg::quantum::CoroContextPtr<Bloomberg::quantum::Void> ctx) -> int {
+        ++innerTaskCallsCounter;
+        switchTask(ctx);
+        return 0;
+    };
+    auto task = [&outerTaskCallsCounter, &innerTask, &switchTask] (Bloomberg::quantum::CoroContextPtr<Bloomberg::quantum::Void> ctx) -> int {
+        switchTask(ctx);
+        ctx->post(innerTask);
+        ++outerTaskCallsCounter;
+        return 0;
+    };
+    testTaskStateHandler(100, {}, false, false, task);
+    EXPECT_EQ(innerTaskCallsCounter, outerTaskCallsCounter);
 }
